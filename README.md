@@ -182,6 +182,10 @@ Meta 웹훅 설정:
 
 ### 방식 B — Hermes Agent (Baileys 셀프챗) · **현재 작동**
 
+> **채택 이유:** 원래 방식 A(공식 Cloud API)로 진행하려 했으나, **Meta 개발자 계정
+> 문자(SMS) 인증이 반복 실패**(Meta 측 알려진 이슈)하여 개발자 등록을 완료하지 못했습니다.
+> 그래서 Meta 계정이 전혀 필요 없는 **개인 WhatsApp QR 연결(Baileys) 셀프챗 방식**으로 전환했습니다.
+
 Meta 계정 없이 **개인 WhatsApp을 QR로 연결**해 쓰는 방식. 응답은 Hermes Agent가
 gemma4 두뇌(`8081`)로 생성합니다. 설정·인증은 모두 `~/.hermes/`에 저장되며
 (**WhatsApp 세션 인증 포함 → git 커밋 금지**), 이 저장소에는 재현 절차만 문서화합니다.
