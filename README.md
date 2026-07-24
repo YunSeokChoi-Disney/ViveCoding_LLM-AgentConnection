@@ -6,6 +6,7 @@
 - **행동 (Agent)** = 코딩·실행을 담당하는 에이전트 (OpenCode, Hermes Agent)
 - 두 에이전트가 하나의 두뇌 LLM에 OpenAI 호환 API로 연결됨
 - 별도로, FastAPI 게임 서버가 NPC 채팅용 LLM을 사용
+- **WhatsApp 챗봇** — WhatsApp Cloud API 웹훅이 로컬 LLM을 직접 호출해 답장
 
 모든 LLM은 **로컬(llama.cpp)** 에서 구동되어 외부 API 비용·의존이 없습니다.
 
@@ -24,13 +25,16 @@ flowchart TD
         BRAIN["gemma4 (llama.cpp)<br/>127.0.0.1:8081 · 64K ctx<br/>start_brain.sh"]
     end
 
-    subgraph Game["게임 서버 (별개 경로)"]
+    subgraph Game["FastAPI 서버 (별개 경로)"]
         API["FastAPI 서버<br/>0.0.0.0:8000<br/>start_server.sh"]
         NPC["Hermes-3-8B (llama.cpp)<br/>127.0.0.1:8080<br/>start_llm.sh"]
         DB[("MySQL<br/>:3306")]
     end
 
     Client["게임 클라이언트"]
+    WAUser["WhatsApp 사용자"]
+    Meta["Meta<br/>WhatsApp Cloud API"]
+    Tunnel["cloudflared 터널<br/>(공개 HTTPS)"]
 
     OC -- "OpenAI 호환 /v1" --> BRAIN
     HA -- "OpenAI 호환 /v1" --> BRAIN
@@ -38,6 +42,11 @@ flowchart TD
     Client -- "회원가입/로그인/NPC 대화" --> API
     API -- "인증·유저" --> DB
     API -- "NPC 채팅 프록시 /v1/chat/completions" --> NPC
+
+    WAUser --> Meta
+    Meta -- "webhook" --> Tunnel --> API
+    API -- "챗봇 응답 /v1/chat/completions" --> NPC
+    API -- "Graph API 답장" --> Meta
 ```
 
 > **주의:** "Hermes"가 두 곳에 나옵니다 — (1) NPC용 **Hermes-3-8B 모델**, (2) 코딩 에이전트 도구 **Hermes Agent**. 서로 다른 것입니다.
@@ -50,7 +59,8 @@ flowchart TD
 |---|---|---|---|
 | **gemma4 두뇌** | OpenCode / Hermes Agent의 사고 엔진 | `8081` | `gemma-4-E2B-it-Q8_0.gguf` |
 | **NPC LLM** | FastAPI 게임 서버의 NPC 대화 | `8080` | `Hermes-3-Llama-3.1-8B.Q4_K_M.gguf` |
-| **FastAPI 서버** | 인증 + NPC 채팅 API | `8000` | — |
+| **FastAPI 서버** | 인증 + NPC 채팅 + WhatsApp 웹훅 API | `8000` | — |
+| **WhatsApp 챗봇** | WhatsApp Cloud API 웹훅 → 로컬 LLM 응답 | `8000` (`/whatsapp/webhook`) | Hermes-3-8B(`8080`) |
 | **MySQL** | 유저 저장소 | `3306` | — |
 
 에이전트 → 두뇌 연결 설정 (저장소 밖, 각 홈 디렉토리):
@@ -70,7 +80,8 @@ ViveCoding_LLM-AgentConnection/
 │   ├── main.py                 # 앱 진입점 (/health)
 │   ├── routers/
 │   │   ├── auth.py             # /auth/signup, /auth/login, /auth/withdraw
-│   │   └── npc.py              # /npc/chat, /npc/reset (→ llama.cpp 프록시)
+│   │   ├── npc.py              # /npc/chat, /npc/reset (→ llama.cpp 프록시)
+│   │   └── whatsapp.py         # /whatsapp/webhook (WhatsApp Cloud API 챗봇)
 │   ├── models.py               # User 테이블 (SQLAlchemy)
 │   ├── config.py               # 환경설정 (.env)
 │   ├── security.py, deps.py    # JWT · 의존성
@@ -120,8 +131,43 @@ hermes
 | POST | `/auth/withdraw` | 회원 탈퇴 |
 | POST | `/npc/chat` | NPC 대화 (LLM 응답) |
 | POST | `/npc/reset` | NPC 대화 기록 초기화 |
+| GET | `/whatsapp/webhook` | WhatsApp 웹훅 검증 핸드셰이크 |
+| POST | `/whatsapp/webhook` | WhatsApp 메시지 수신 → LLM 응답 답장 |
 
 API 문서: 서버 실행 후 `http://<host>:8000/docs`
+
+---
+
+## WhatsApp 챗봇 설정
+
+WhatsApp Cloud API 웹훅이 메시지를 받아 로컬 LLM(`8080`)이 답장을 생성합니다.
+서명 검증(`X-Hub-Signature-256`) → 발신자별 대화기록 → 백그라운드 처리로 웹훅 즉시 200 반환.
+
+### 필요한 환경변수 (`Server/.env`)
+
+| 변수 | 설명 |
+|---|---|
+| `WHATSAPP_VERIFY_TOKEN` | 웹훅 검증용, 직접 정하는 임의 문자열 (Meta 웹훅 설정에도 동일 입력) |
+| `WHATSAPP_TOKEN` | Meta 액세스 토큰 (임시 24h 또는 System User 영구 토큰) |
+| `WHATSAPP_PHONE_NUMBER_ID` | Meta API Setup의 Phone number ID |
+| `WHATSAPP_APP_SECRET` | Meta 앱 설정 > 기본 설정 > 앱 시크릿 (서명 검증용) |
+| `WHATSAPP_LLM_URL` | 응답 생성 LLM 주소 (기본 `http://127.0.0.1:8080`) |
+
+> 미설정 시 웹훅은 비활성(403)이며 서버는 정상 기동됩니다.
+
+### 공개 웹훅 (홈 서버 → 공개 HTTPS)
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+# 출력된 https://<random>.trycloudflare.com 이 공개 주소
+```
+
+Meta 웹훅 설정:
+- **Callback URL:** `https://<random>.trycloudflare.com/whatsapp/webhook`
+- **Verify token:** `WHATSAPP_VERIFY_TOKEN`과 동일하게
+- **구독 필드:** `messages`
+
+> quick tunnel은 재시작 시 URL이 바뀌므로 Callback URL도 갱신 필요. 계정·번호 정식 등록 및 24시간 응답 창(customer service window) 등 Cloud API 정책 유의.
 
 ---
 
@@ -129,6 +175,8 @@ API 문서: 서버 실행 후 `http://<host>:8000/docs`
 
 - ✅ **OpenCode → gemma4 두뇌**: 연결·동작 검증 완료
 - ⚠️ **Hermes Agent → gemma4 두뇌**: 연결은 되나 **CPU 추론이 느려** 실사용이 어려움
+- ✅ **WhatsApp 챗봇 코드**: 웹훅 검증·서명·LLM 호출·답장 전 경로 로컬 검증 완료
+- ⏳ **WhatsApp 실연결**: Meta 앱 생성/토큰 발급 대기 중 (개발자 계정 인증 이슈)
 - ⚠️ **GPU 미사용**: RTX 3060(12GB) 보유 중이나 드라이버 버전 불일치 상태
   - **재부팅** → 드라이버 정상화 → llama.cpp **CUDA 빌드** → `start_*.sh`의 `NGL=0` → `99`
   - GPU 가속 시 에이전트 속도 문제 해결 예상
