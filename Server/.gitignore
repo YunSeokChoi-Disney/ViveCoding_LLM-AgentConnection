@@ -1,0 +1,10 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+
+# 비밀키/환경변수 (.env.example은 커밋됨)
+.env
+
+# 로그
+*.log

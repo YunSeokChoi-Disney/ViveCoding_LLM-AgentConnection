@@ -1,0 +1,16 @@
+# === 비밀키/환경변수 (.env.example은 커밋됨) ===
+.env
+Server/.env
+
+# === Python ===
+Server/venv/
+**/__pycache__/
+*.py[cod]
+
+# === 로그 ===
+*.log
+
+# === LLM 대용량 산출물 (llmserver) ===
+# 모델 가중치(gguf)와 llama.cpp 바이너리는 git에 올리지 않음 (수 GB)
+llmserver/models/
+llmserver/bin/
