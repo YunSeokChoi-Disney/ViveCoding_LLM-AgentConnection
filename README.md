@@ -140,10 +140,19 @@ API 문서: 서버 실행 후 `http://<host>:8000/docs`
 
 ## WhatsApp 챗봇 설정
 
+두 가지 방식이 있습니다.
+
+- **방식 A — 공식 Cloud API** (아래): FastAPI 웹훅(`routers/whatsapp.py`)이 로컬 LLM으로 답장. Meta 비즈니스 계정·공개 웹훅 필요.
+- **방식 B — Hermes Agent (Baileys 셀프챗)** (맨 아래): 개인 WhatsApp을 QR로 연결. Meta 계정 불필요. **현재 작동 중인 방식.**
+
+---
+
+### 방식 A — 공식 WhatsApp Cloud API
+
 WhatsApp Cloud API 웹훅이 메시지를 받아 로컬 LLM(`8080`)이 답장을 생성합니다.
 서명 검증(`X-Hub-Signature-256`) → 발신자별 대화기록 → 백그라운드 처리로 웹훅 즉시 200 반환.
 
-### 필요한 환경변수 (`Server/.env`)
+#### 필요한 환경변수 (`Server/.env`)
 
 | 변수 | 설명 |
 |---|---|
@@ -155,7 +164,7 @@ WhatsApp Cloud API 웹훅이 메시지를 받아 로컬 LLM(`8080`)이 답장을
 
 > 미설정 시 웹훅은 비활성(403)이며 서버는 정상 기동됩니다.
 
-### 공개 웹훅 (홈 서버 → 공개 HTTPS)
+#### 공개 웹훅 (홈 서버 → 공개 HTTPS)
 
 ```bash
 cloudflared tunnel --url http://localhost:8000
@@ -171,12 +180,42 @@ Meta 웹훅 설정:
 
 ---
 
+### 방식 B — Hermes Agent (Baileys 셀프챗) · **현재 작동**
+
+Meta 계정 없이 **개인 WhatsApp을 QR로 연결**해 쓰는 방식. 응답은 Hermes Agent가
+gemma4 두뇌(`8081`)로 생성합니다. 설정·인증은 모두 `~/.hermes/`에 저장되며
+(**WhatsApp 세션 인증 포함 → git 커밋 금지**), 이 저장소에는 재현 절차만 문서화합니다.
+
+```bash
+# 1) Hermes Agent 설치 (최초 1회)
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup
+
+# 2) Hermes → gemma4 두뇌 연결 (~/.hermes/config.yaml)
+#    provider: custom / base_url: http://127.0.0.1:8081/v1 / default: gemma4
+
+# 3) WhatsApp 페어링 (QR을 폰의 '연결된 기기'로 스캔)
+hermes whatsapp
+
+# 4) 셀프챗 모드로 설정 (~/.hermes/.env)
+#    WHATSAPP_MODE=self-chat
+#    WHATSAPP_ALLOWED_USERS=<본인 국제형식 번호, 예: 8210XXXXXXXX>
+
+# 5) 두뇌 실행 후 게이트웨이 실행
+./llmserver/start_brain.sh          # 별도 터미널, gemma4 @ 8081
+hermes gateway run                  # 메시지 수신·응답 시작
+```
+
+- WhatsApp **"나에게 메시지(Message Yourself)"** 에 보내면 `⚕ Hermes Agent` 접두어로 답장.
+- ⚠️ 현재 CPU 추론이라 응답에 수 분 소요 → GPU 활성화 시 개선(아래 남은 과제).
+
+---
+
 ## 현재 상태 / 남은 과제
 
 - ✅ **OpenCode → gemma4 두뇌**: 연결·동작 검증 완료
 - ⚠️ **Hermes Agent → gemma4 두뇌**: 연결은 되나 **CPU 추론이 느려** 실사용이 어려움
-- ✅ **WhatsApp 챗봇 코드**: 웹훅 검증·서명·LLM 호출·답장 전 경로 로컬 검증 완료
-- ⏳ **WhatsApp 실연결**: Meta 앱 생성/토큰 발급 대기 중 (개발자 계정 인증 이슈)
+- ✅ **WhatsApp (방식 B, Hermes Baileys 셀프챗)**: QR 페어링 → 셀프챗 → gemma4 답장 **작동 확인**
+- ⏳ **WhatsApp (방식 A, Cloud API)**: 코드 검증 완료, Meta 개발자 계정 인증 이슈로 실연결 보류
 - ⚠️ **GPU 미사용**: RTX 3060(12GB) 보유 중이나 드라이버 버전 불일치 상태
   - **재부팅** → 드라이버 정상화 → llama.cpp **CUDA 빌드** → `start_*.sh`의 `NGL=0` → `99`
   - GPU 가속 시 에이전트 속도 문제 해결 예상
